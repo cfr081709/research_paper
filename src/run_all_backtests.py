@@ -3,10 +3,9 @@ Master backtester orchestrator.
 
 Runs all backtesting pipelines in sequence:
   1. data_retrieval   - fetch/update price data and indicators
-  2. dataAnalysis       - compute technical analysis signals
-  3. signal_backtester  - backtest individual indicator signals
-  4. ML                 - traditional ML model backtests
-  5. LSTM               - LSTM neural network backtests
+  2. signal_backtester  - backtest individual indicator signals
+  3. ML                 - traditional ML model backtests
+  4. LSTM               - LSTM neural network backtests
 
 Usage:
   python Code/run_all_backtests.py
@@ -66,27 +65,21 @@ def main():
         print("\n[!] Data retrieval failed; halting remaining steps.")
         return
     
-    # Step 2: Technical analysis
-    results['analysis'] = run_script(
-        code_dir / 'dataAnalysis.py',
-        'Technical Analysis (compute signals)'
-    )
-    
-    # Step 3: Signal-based backtest
+    # Step 2: Signal-based backtest
     results['signal_backtest'] = run_script(
         code_dir / 'signal_backtester.py',
         'Signal Backtest (individual indicator strategies)'
     )
     
-    # Step 4: Traditional ML backtest
+    # Step 3: Traditional ML backtest
     results['ml_backtest'] = run_script(
-        code_dir / 'finalML.py',
+        code_dir / 'ML.py',
         'ML Backtest (Polynomial, Linear, RandomForest, GradientBoosting)'
     )
     
-    # Step 5: LSTM backtest
+    # Step 4: LSTM backtest
     results['lstm_backtest'] = run_script(
-        code_dir / 'finalLSTM.py',
+        code_dir / 'LSTM.py',
         'LSTM Backtest (Deep learning neural network)'
     )
     

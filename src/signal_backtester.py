@@ -1,123 +1,143 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
+import os
+
 
 class SignalBacktester:
 
-    DEFAULT_BULLISH = {
-        'SMA_Trend': ['Strong Uptrend'],
-        'EMA_Trend': ['Strong Uptrend'],
-        'MACD_Trend': ['Bullish Momentum'],
-        'ADX_Trend': ['Strong Trend', 'Very Strong Trend', 'Extremely Strong Trend'],
-        'OBV_Trend': ['Buying Pressure'],
-    }
-
-    DEFAULT_BEARISH = {
-        'SMA_Trend': ['Strong Downtrend'],
-        'EMA_Trend': ['Strong Downtrend'],
-        'MACD_Trend': ['Bearish Momentum'],
-        'OBV_Trend': ['Selling Pressure'],
-    }
-
-    def __init__(self, price_csv, analysis_csv, start_date=None, end_date=None):
+    def __init__(self, price_csv, start_date=None, end_date=None):
         self.price_csv = Path(price_csv)
-        self.analysis_csv = Path(analysis_csv)
         self.start_date = pd.to_datetime(start_date) if start_date else None
         self.end_date = pd.to_datetime(end_date) if end_date else None
-        self._load()
+        self.load()
 
-    def _load(self):
-        self.prices = pd.read_csv(self.price_csv, parse_dates=['Date'])
-        self.analysis = pd.read_csv(self.analysis_csv, parse_dates=['Date'])
+    # =========================
+    # LOAD + CLEAN DATA
+    # =========================
+    def load(self):
+        df = pd.read_csv(self.price_csv)
 
+        # 🔥 Robust Date handling (fixes your earlier error permanently)
+        df.columns = [c.strip() for c in df.columns]
+
+        if 'Date' not in df.columns:
+            # try fallback
+            for c in df.columns:
+                if c.lower() in ['date', 'datetime', 'timestamp']:
+                    df.rename(columns={c: 'Date'}, inplace=True)
+
+        if 'Date' not in df.columns:
+            raise ValueError(f"No Date column found. Columns: {df.columns}")
+
+        df['Date'] = pd.to_datetime(df['Date'])
+
+        # Filter dates
         if self.start_date is not None:
-            self.prices = self.prices[self.prices['Date'] >= self.start_date]
-            self.analysis = self.analysis[self.analysis['Date'] >= self.start_date]
-
+            df = df[df['Date'] >= self.start_date]
         if self.end_date is not None:
-            self.prices = self.prices[self.prices['Date'] <= self.end_date]
-            self.analysis = self.analysis[self.analysis['Date'] <= self.end_date]
+            df = df[df['Date'] <= self.end_date]
 
-        self.data = pd.merge(
-            self.analysis,
-            self.prices,
-            on=['Ticker', 'Date'],
-            how='left'
-        )
+        # Sort
+        df = df.sort_values(['Ticker', 'Date']).reset_index(drop=True)
 
+        self.data = df
+
+    # =========================
+    # SIGNAL ENGINE
+    # =========================
+    def _build_signals(self):
+
+        df = self.data
+
+        # --- TREND SIGNAL (MA CROSS) ---
+        trend = np.where(df['SMA_50'] > df['SMA_200'], 1,
+                 np.where(df['SMA_50'] < df['SMA_200'], -1, 0))
+
+        # --- MOMENTUM (MACD) ---
+        macd = np.where(df['MACD'] > df['MACD_Signal'], 1,
+                np.where(df['MACD'] < df['MACD_Signal'], -1, 0))
+
+        # --- ADX FILTER (strength only) ---
+        strong_trend = df['ADX'] > 25
+
+        # --- RSI MEAN REVERSION (only when weak trend) ---
+        rsi = np.where(~strong_trend,
+                np.where(df['RSI'] < 30, 1,
+                np.where(df['RSI'] > 70, -1, 0)),
+                0)
+
+        # --- COMBINE SIGNALS ---
+        signal = (0.5 * trend + 0.3 * macd + 0.2 * rsi)
+
+        # Normalize
+        signal = np.clip(signal, -1, 1)
+
+        df['Signal'] = signal
+
+        return df
+
+    # =========================
+    # BACKTEST
+    # =========================
     def run(self, lookahead=1):
 
-        self.data = self.data.sort_values(['Ticker', 'Date']).reset_index(drop=True)
+        df = self.data.copy()
 
-        # ✅ Forward return (correct)
-        self.data['Return'] = (
-            self.data.groupby('Ticker')['Close']
+        # 🔥 Forward returns (correct, no lookahead bias)
+        df['Return'] = (
+            df.groupby('Ticker')['Close']
             .pct_change(periods=lookahead)
             .shift(-lookahead)
         )
 
-        # 🔥 NEW: Regime-aware signal
-        self.data['Signal'] = 0.0
+        # Build signals
+        df = self._build_signals()
 
-        # --- TREND COMPONENT ---
-        trend_score = 0
-        trend_cols = ['SMA_Trend', 'EMA_Trend', 'MACD_Trend']
+        # Strategy returns
+        df['Strategy_Return'] = df['Signal'] * df['Return']
 
-        for col in trend_cols:
-            trend_score += self.data[col].isin(self.DEFAULT_BULLISH.get(col, [])).astype(int)
-            trend_score -= self.data[col].isin(self.DEFAULT_BEARISH.get(col, [])).astype(int)
+        valid = df.dropna(subset=['Strategy_Return'])
 
-        # --- ADX FILTER ---
-        strong_trend = self.data['ADX_Trend'].isin(
-            ['Strong Trend', 'Very Strong Trend', 'Extremely Strong Trend']
-        )
+        # =========================
+        # METRICS
+        # =========================
 
-        # --- RSI (ONLY WHEN NOT TRENDING) ---
-        rsi_signal = np.where(
-            ~strong_trend,
-            np.where(self.data['RSI_Trend'] == 'Oversold', 1,
-            np.where(self.data['RSI_Trend'] == 'Overbought', -1, 0)),
-            0
-        )
-
-        # --- FINAL SIGNAL ---
-        self.data['Signal'] = (trend_score / len(trend_cols)) + rsi_signal
-
-        # Normalize
-        self.data['Signal'] = self.data['Signal'].clip(-1, 1)
-
-        # Strategy return
-        self.data['Strategy_Return'] = self.data['Signal'] * self.data['Return']
-
-        valid = self.data.dropna(subset=['Strategy_Return'])
-
-        # ✅ PER-TICKER ANALYSIS (PROFESSOR REQUEST)
         ticker_stats = valid.groupby('Ticker')['Strategy_Return'].agg(['mean', 'std'])
 
-        overall_returns = valid['Strategy_Return'].values
+        overall_returns = valid['Strategy_Return']
 
         sharpe = self._sharpe(overall_returns)
         maxdd = self._max_drawdown(overall_returns)
 
         metrics_df = pd.DataFrame([{
-            'n_trades': len(overall_returns),
-            'avg_return': np.mean(overall_returns),
+            'n_obs': len(valid),
+            'avg_return': overall_returns.mean(),
             'Sharpe': sharpe,
             'MaxDrawdown': maxdd,
-            'std_across_tickers': ticker_stats['mean'].std(),  # 🔥 KEY ADD
+            'std_across_tickers': ticker_stats['mean'].std(),
             'worst_ticker_return': ticker_stats['mean'].min()
         }])
 
-        metrics_df.to_csv('Final Backtest Data/signal_backtest_metrics.csv', index=False)
-        ticker_stats.to_csv('Final Backtest Data/per_ticker_stats.csv')
+        # =========================
+        # SAVE OUTPUTS
+        # =========================
+        os.makedirs("results", exist_ok=True)
+
+        metrics_df.to_csv('results/signal_backtest_metrics.csv', index=False)
+        ticker_stats.to_csv('results/per_ticker_stats.csv')
+        df.to_csv('results/full_backtest_output.csv', index=False)
 
         return metrics_df
 
+    # =========================
+    # METRICS
+    # =========================
     def _sharpe(self, returns):
         r = pd.Series(returns).dropna()
-        if r.std() < 1e-6:
+        if r.std() < 1e-8:
             return 0
-        return r.mean() / r.std() * np.sqrt(252)
+        return np.sqrt(252) * r.mean() / r.std()
 
     def _max_drawdown(self, returns):
         r = pd.Series(returns).dropna()
@@ -126,9 +146,9 @@ class SignalBacktester:
         return dd.min()
 
 
+# =========================
+# RUN
+# =========================
 if __name__ == '__main__':
-    sb = SignalBacktester(
-        price_csv='backtestingData.csv',
-        analysis_csv='dataAnalysis.csv'
-    )
+    sb = SignalBacktester(price_csv='data/backtestingData.csv')
     print(sb.run())

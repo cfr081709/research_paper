@@ -62,7 +62,7 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
         delta = grp['Close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        rs = gain.rolling(14).mean() / (loss.rolling(14).mean() + 1e - 8)
+        rs = gain.rolling(14).mean() / (loss.rolling(14).mean() + (1 * np.e) - 8)
         grp['RSI_14'] = 100 - (100 / (1 + rs))
 
         ema12 = grp['Close'].ewm(span=12, adjust=False).mean()
@@ -162,11 +162,8 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
     preds_df = pd.concat(all_preds, ignore_index=True)
     metrics_df = pd.DataFrame(metrics)
 
-    preds_df.to_csv('Final Backtest Data/ml_predictions.csv', index=False)
-    metrics_df.to_csv('Final Backtest Data/ml_metrics.csv', index=False)
-
-    preds_df.to_excel('Final Backtest Data/ml_predictions.xlsx', index=False)
-    metrics_df.to_excel('Final Backtest Data/ml_metrics.xlsx', index=False)
+    preds_df.to_csv('results/predictions/ml_predictions.csv', index=False)
+    metrics_df.to_csv('results/metrics/ml_metrics.csv', index=False)
 
     metadata = {
         "seed": SEED,
@@ -179,7 +176,7 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
         "timestamp": datetime.now().isoformat()
     }
 
-    with open(BASE_DIR / "results" / "metadata"/ "ml", "w") as f:
+    with open(BASE_DIR / "results" / "metadata"/ "ml.json", "w") as f:
         json.dump(metadata, f, indent=4)
 
    

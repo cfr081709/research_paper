@@ -2,7 +2,7 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import csv
+import os
 
 # === Stock Data Set === #
 stockList = {
@@ -16,154 +16,144 @@ stockList = {
 }
 
 # === Const. Variables === #
-# use wide range for full backtest (2000 through start of 2026)
 startDate = '2000-01-01'
 endDate = '2026-01-01'
-fileName = "backtestingData.csv"
+fileName = "data/backtestingData.csv"
 
-# Flatten stock list
 tickers = stockList["nasdaqStocks"] + stockList["nyseStockExchange"]
-dataOfStock = yf.download(tickers, start=startDate, end=endDate, group_by='ticker')
 
-# === Fetch Data === #
-class dataRetrieval:
-    #Price Data
-    def getPriceData(self, data):
-        cols = ['Open', 'High', 'Low', 'Close']
-        # include Volume if it exists
-        if 'Volume' in data.columns:
-            cols.append('Volume')
-        data = data[cols]
-        return data
+# === Download Data === #
+data = yf.download(
+    tickers,
+    start=startDate,
+    end=endDate,
+    auto_adjust=True,
+    progress=False
+)
 
-    #Moving Average Data
-    def getMovingAverageData(self, data):
-        data['SMA_20'] = data['Close'].rolling(window=20).mean()
-        data['SMA_50'] = data['Close'].rolling(window=50).mean()
-        data['SMA_100'] = data['Close'].rolling(window=100).mean()
-        data['SMA_200'] = data['Close'].rolling(window=200).mean()
+# Ensure reproducibility
+data = data.sort_index()
 
-        data['EMA_12'] = data['Close'].ewm(span=12, adjust=False).mean()
-        data['EMA_26'] = data['Close'].ewm(span=26, adjust=False).mean()
-        data['EMA_50'] = data['Close'].ewm(span=50, adjust=False).mean()
-        data['EMA_200'] = data['Close'].ewm(span=200, adjust=False).mean()
+# === Feature Engineering Class === #
+class DataEngineer:
 
-        return data, data['EMA_12'], data['EMA_26']
-    #MACD Data
-    def getMACDData(self, data, EMA_12, EMA_26):
-        data['MACD'] = np.subtract(EMA_12, EMA_26)
-        data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
-        return data
-    #ADX Data
-    def getADXData(self, data):
-        high = data['High']
-        low = data['Low']
-        close = data['Close']
+    def process_ticker(self, df, ticker):
+        df = df.copy()
 
-        plusDM = high.diff()
-        minusDM = low.diff() * -1
-        plusDM[plusDM < 0] = 0
-        minusDM[minusDM < 0] = 0
+        # Reset index → FIXES your Date issue
+        df = df.reset_index()
+        df.rename(columns={"Date": "Date"}, inplace=True)
 
-        tr1 = high - low
-        tr2 = (high - close.shift()).abs()
-        tr3 = (low - close.shift()).abs()
-        trueRange = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        # === Basic Features === #
+        df['Return'] = df['Close'].pct_change()
+        df['LogReturn'] = np.log(df['Close'] / df['Close'].shift(1))
 
-        atr = trueRange.rolling(window=14).mean()
-        posDI = 100 * (plusDM.rolling(window=14).sum() / atr)
-        negDI = 100 * (minusDM.rolling(window=14).sum() / atr)
+        # === Volatility === #
+        df['Volatility_20'] = df['Return'].rolling(20).std()
 
-        dx = (np.abs(posDI - negDI) / (posDI + negDI)) * 100
-        adx = dx.rolling(window=14).mean()
+        # === Moving Averages === #
+        for w in [20, 50, 100, 200]:
+            df[f'SMA_{w}'] = df['Close'].rolling(w).mean()
 
-        data['ADX'] = adx
-        return data
-    #RSI Data
-    def getRSIData(self, data):
-        delta = data['Close'].diff()
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
+        for w in [12, 26, 50, 200]:
+            df[f'EMA_{w}'] = df['Close'].ewm(span=w, adjust=False).mean()
 
-        avgGain = pd.Series(gain).rolling(window=14).mean()
-        avgLoss = pd.Series(loss).rolling(window=14).mean()
+        # === MACD === #
+        df['MACD'] = df['EMA_12'] - df['EMA_26']
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
 
-        rs = np.divide(avgGain, avgLoss, out=np.zeros_like(avgGain), where=avgLoss!=0)
-        rsi = 100 - (100 / (1 + rs))
+        # === RSI (FIXED) === #
+        delta = df['Close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
 
-        data['RSI'] = rsi
-        return data
-    #OBV Data
-    def getOBVData(self, data):
-        # only compute OBV if Volume exists and is not all NaN
-        if 'Volume' not in data.columns or data['Volume'].isna().all():
-            data['OBV'] = 0
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+
+        rs = avg_gain / avg_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+
+        # === ADX (Improved) === #
+        high = df['High']
+        low = df['Low']
+        close = df['Close']
+
+        plus_dm = (high.diff()).clip(lower=0)
+        minus_dm = (-low.diff()).clip(lower=0)
+
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs()
+        ], axis=1).max(axis=1)
+
+        atr = tr.rolling(14).mean()
+
+        plus_di = 100 * (plus_dm.rolling(14).sum() / atr)
+        minus_di = 100 * (minus_dm.rolling(14).sum() / atr)
+
+        dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+        df['ADX'] = dx.rolling(14).mean()
+
+        # === OBV === #
+        if 'Volume' in df.columns:
+            direction = np.sign(df['Close'].diff()).fillna(0)
+            df['OBV'] = (direction * df['Volume']).cumsum()
         else:
-            obv = np.where(data['Close'] > data['Close'].shift(1),
-                           data['Volume'],
-                           np.where(data['Close'] < data['Close'].shift(1),
-                                    -data['Volume'], 0))
-            data['OBV'] = np.cumsum(obv)
-        return data
+            df['OBV'] = 0
+
+        # === Lag Features (VERY IMPORTANT FOR ML) === #
+        for lag in [1, 2, 3, 5, 10]:
+            df[f'Return_lag_{lag}'] = df['Return'].shift(lag)
+
+        # === Target Variable (for ML) === #
+        df['Target'] = df['Return'].shift(-1)
+
+        df['Ticker'] = ticker
+
+        return df
 
 
-# === Run on All Tickers === #
-retriever = dataRetrieval()
-allResults = []
+# === Process All Tickers === #
+engineer = DataEngineer()
+all_data = []
 
 for ticker in tickers:
     try:
-        stockData = dataOfStock[ticker].copy()
-        
-        # ensure Volume exists; if not, create as NaN column
-        if 'Volume' not in stockData.columns:
-            stockData['Volume'] = np.nan
-
-        stockData, EMA_12, EMA_26 = retriever.getMovingAverageData(stockData)
-        stockData = retriever.getMACDData(stockData, EMA_12, EMA_26)
-        stockData = retriever.getPriceData(stockData)
-        stockData = retriever.getADXData(stockData)
-        stockData = retriever.getRSIData(stockData)
-        stockData = retriever.getOBVData(stockData)
-
-        stockData['Ticker'] = ticker
-        allResults.append(stockData)
-
+        df = data.xs(ticker, axis=1, level=1)
+        processed = engineer.process_ticker(df, ticker)
+        all_data.append(processed)
     except Exception as e:
-        print(f"Error processing {ticker}: {e}")
+        print(f"[ERROR] {ticker}: {e}")
 
-# Combine and save
-finalData = pd.concat(allResults)
+finalData = pd.concat(all_data, ignore_index=True)
 
-# compute some basic performance metrics per ticker
-metrics = []
-def compute_return_metrics(price_series):
-    # assume price_series is ordered by date
-    returns = price_series.pct_change().dropna()
-    if returns.empty:
-        return np.nan, np.nan
-    sharpe = returns.mean() / returns.std() * np.sqrt(252) if returns.std() != 0 else np.nan
+# === Clean Data === #
+finalData = finalData.sort_values(['Ticker', 'Date'])
+
+# Drop early NaNs from indicators
+finalData = finalData.dropna().reset_index(drop=True)
+
+# === Metrics === #
+def compute_metrics(df):
+    returns = df['Return']
+    sharpe = np.sqrt(252) * returns.mean() / returns.std() if returns.std() != 0 else np.nan
+
     cum = (1 + returns).cumprod()
     drawdown = cum / cum.cummax() - 1
-    max_dd = drawdown.min()
-    return sharpe, max_dd
 
-for ticker, grp in finalData.groupby('Ticker'):
-    grp = grp.sort_values('Date')
-    sharpe, maxdd = compute_return_metrics(grp['Close'])
-    metrics.append({'Ticker': ticker, 'Sharpe': sharpe, 'MaxDrawdown': maxdd, 'N': len(grp)})
-metrics_df = pd.DataFrame(metrics)
+    return pd.Series({
+        "Sharpe": sharpe,
+        "MaxDrawdown": drawdown.min(),
+        "N": len(df)
+    })
 
-# save data and metrics to CSV and Excel
-finalData.to_csv(fileName, mode='a', header=not pd.io.common.file_exists(fileName), index=False)
+metrics_df = finalData.groupby('Ticker').apply(compute_metrics).reset_index()
 
-xlsx_name = fileName.replace('.csv', '.xlsx')
-with pd.ExcelWriter(xlsx_name) as writer:
-    finalData.to_excel(writer, sheet_name='data', index=False)
-    metrics_df.to_excel(writer, sheet_name='metrics', index=False)
+# === Save (REPRODUCIBLE) === #
+os.makedirs("data", exist_ok=True)
 
-# also export metrics separately for convenience
-metrics_df.to_csv(fileName.replace('.csv', '_metrics.csv'), index=False)
+finalData.to_csv(fileName, index=False)
+metrics_df.to_csv(fileName.replace(".csv", "_metrics.csv"), index=False)
 
-print("Data Retrieval Complete - Saved to", fileName)
-print("Metrics saved to", xlsx_name, "and", fileName.replace('.csv', '_metrics.csv'))
+print("✅ Data Retrieval + Feature Engineering Complete")
