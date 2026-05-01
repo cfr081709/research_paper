@@ -148,7 +148,7 @@ def compute_metrics(df):
         "N": len(df)
     })
 
-metrics_df = finalData.groupby('Ticker').apply(compute_metrics).reset_index()
+metrics_df = finalData.groupby('Ticker').apply(compute_metrics, include_groups=False).reset_index()
 
 # === Save (REPRODUCIBLE) === #
 os.makedirs("data", exist_ok=True)

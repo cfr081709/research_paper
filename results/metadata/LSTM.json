@@ -1,0 +1,20 @@
+{
+    "seed": 42,
+    "test_ratio": 0.2,
+    "time_step": 60,
+    "epochs": 5,
+    "model": "LSTM",
+    "features": [
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "EMA_20",
+        "EMA_50",
+        "RSI_14",
+        "MACD"
+    ],
+    "data_hash": "86e24da399be3136ad5915b6aa212a1a",
+    "timestamp": "2026-04-30T20:36:53.762447"
+}

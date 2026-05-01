@@ -1,0 +1,23 @@
+{
+    "seed": 42,
+    "test_ratio": 0.2,
+    "features": [
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "EMA_20",
+        "EMA_50",
+        "RSI_14",
+        "MACD"
+    ],
+    "models": [
+        "Linear",
+        "RandomForest",
+        "GradientBoosting",
+        "Polynomial"
+    ],
+    "data_hash": "01d658ec20dbf45cc44eb9d84c251406",
+    "timestamp": "2026-05-01T09:19:52.010365"
+}

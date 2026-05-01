@@ -4,7 +4,6 @@ import json
 import hashlib
 from pathlib import Path
 from datetime import datetime
-from config import *
 
 import numpy as np
 import pandas as pd
@@ -13,30 +12,61 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from sklearn.preprocessing import MinMaxScaler, PolynomialFeatures
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 
-# NOTE:
-# Rolling indicators such as SMA200 may introduce look-ahead bias if computed
-# on the full dataset before splitting. Ideally, indicators should be computed
-# separately on train/test splits. This is acknowledged as a limitation.
-
+# =========================
+# SETUP
+# =========================
 SEED = 42
-
 os.environ["PYTHONHASHSEED"] = str(SEED)
+
 random.seed(SEED)
 np.random.seed(SEED)
 
-print(f"Using seed: {SEED}")
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 def file_hash(path):
     with open(path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
 
+# =========================
+# FEATURE ENGINEERING
+# =========================
+def add_features(df):
+    df = df.copy()
+
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+
+    delta = df['Close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    rs = gain.rolling(14).mean() / (loss.rolling(14).mean() + 1e-8)
+    df['RSI_14'] = 100 - (100 / (1 + rs))
+
+    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = ema12 - ema26
+
+    # Forward return (target)
+    df['Return'] = df['Close'].pct_change().shift(-1)
+
+    return df.dropna().reset_index(drop=True)
+
+# =========================
+# MAIN BACKTEST
+# =========================
 def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
 
+    # --- directories ---
+    Path("results/predictions").mkdir(parents=True, exist_ok=True)
+    Path("results/metrics").mkdir(parents=True, exist_ok=True)
+    Path("results/metadata").mkdir(parents=True, exist_ok=True)
     Path("Final Backtest Data").mkdir(parents=True, exist_ok=True)
 
+    # --- date filtering ---
     if start_date:
         df = df[df['Date'] >= pd.to_datetime(start_date)]
     if end_date:
@@ -50,29 +80,14 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
         'EMA_20','EMA_50','RSI_14','MACD'
     ]
 
-    model_names = ["Linear", "RandomForest", "GradientBoosting", "Polynomial"]
-
     for ticker in sorted(df['Ticker'].unique()):
+
         grp = df[df['Ticker'] == ticker].copy()
         grp = grp.sort_values('Date').reset_index(drop=True)
 
-        grp['EMA_20'] = grp['Close'].ewm(span=20, adjust=False).mean()
-        grp['EMA_50'] = grp['Close'].ewm(span=50, adjust=False).mean()
+        grp = add_features(grp)
 
-        delta = grp['Close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        rs = gain.rolling(14).mean() / (loss.rolling(14).mean() + (1 * np.e) - 8)
-        grp['RSI_14'] = 100 - (100 / (1 + rs))
-
-        ema12 = grp['Close'].ewm(span=12, adjust=False).mean()
-        ema26 = grp['Close'].ewm(span=26, adjust=False).mean()
-        grp['MACD'] = ema12 - ema26
-
-        grp['Return'] = grp['Close'].pct_change().shift(-1)
-
-        grp = grp.dropna().reset_index(drop=True)
-        if len(grp) < 120:
+        if len(grp) < 150:
             continue
 
         X = grp[feature_cols].values
@@ -83,81 +98,100 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
         X_train, X_test = X[:split], X[split:]
         y_train, y_test = y[:split], y[split:]
 
+        # =========================
+        # SCALING (NO LEAKAGE)
+        # =========================
         scaler = MinMaxScaler()
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
 
+        # =========================
+        # MODELS
+        # =========================
         models = {
             "Linear": LinearRegression(),
+
             "RandomForest": RandomForestRegressor(
-                n_estimators=50,
+                n_estimators=100,
                 max_depth=6,
                 min_samples_leaf=5,
                 random_state=SEED,
                 n_jobs=1
             ),
+
             "GradientBoosting": GradientBoostingRegressor(
-                n_estimators=50,
+                n_estimators=100,
                 learning_rate=0.05,
                 max_depth=3,
                 random_state=SEED
             )
         }
 
+        # Polynomial (REGULARIZED → important fix)
         poly = PolynomialFeatures(degree=2, include_bias=False)
         X_train_poly = poly.fit_transform(X_train)
         X_test_poly = poly.transform(X_test)
-        models["Polynomial"] = LinearRegression()
 
+        models["Polynomial"] = Ridge(alpha=1.0)
+
+        # =========================
+        # TRAIN + EVAL
+        # =========================
         for name, model in models.items():
 
-            if name == "Polynomial":
-                model.fit(X_train_poly, y_train)
-                preds = model.predict(X_test_poly)
-            else:
-                model.fit(X_train, y_train)
-                preds = model.predict(X_test)
+            try:
+                if name == "Polynomial":
+                    model.fit(X_train_poly, y_train)
+                    preds = model.predict(X_test_poly)
+                else:
+                    model.fit(X_train, y_train)
+                    preds = model.predict(X_test)
 
-            actual = y_test
+                actual = y_test
 
-            signal = np.where(preds > 0, 1, -1)
-            strategy_returns = signal * actual
+                if len(preds) == 0:
+                    continue
 
-            # ✅ Stable Sharpe
-            std = np.std(strategy_returns)
-            sharpe = (np.mean(strategy_returns) / (std + 1e-8) * np.sqrt(252)) if std > 0 else 0
+                signal = np.where(preds > 0, 1, -1)
+                strategy_returns = signal * actual
 
-            cumulative = (1 + strategy_returns).cumprod()
-            max_dd = (cumulative / np.maximum.accumulate(cumulative) - 1).min()
-            cagr = cumulative[-1] ** (252 / len(strategy_returns)) - 1
+                std = np.std(strategy_returns)
+                sharpe = (np.mean(strategy_returns) / (std + 1e-8)) * np.sqrt(252) if std > 0 else 0
 
-            mae = np.mean(np.abs(actual - preds))
-            rmse = np.sqrt(np.mean((actual - preds) ** 2))
+                cumulative = (1 + strategy_returns).cumprod()
+                max_dd = (cumulative / np.maximum.accumulate(cumulative) - 1).min()
+                cagr = cumulative[-1] ** (252 / len(strategy_returns)) - 1
 
-            metrics.append({
-                'Ticker': ticker,
-                'Model': name,
-                'MAE': mae,
-                'RMSE': rmse,
-                'Sharpe': sharpe,
-                'Max_Drawdown': max_dd,
-                'CAGR': cagr
-            })
+                mae = np.mean(np.abs(actual - preds))
+                rmse = np.sqrt(np.mean((actual - preds) ** 2))
 
-            dates = grp['Date'].iloc[split:].reset_index(drop=True)
+                metrics.append({
+                    'Ticker': ticker,
+                    'Model': name,
+                    'MAE': mae,
+                    'RMSE': rmse,
+                    'Sharpe': sharpe,
+                    'Max_Drawdown': max_dd,
+                    'CAGR': cagr
+                })
 
-            all_preds.append(pd.DataFrame({
-                'Date': dates,
-                'Ticker': ticker,
-                'Model': name,
-                'Actual_Return': actual,
-                'Pred_Return': preds,
-                'Signal': signal,
-                'Strategy_Return': strategy_returns
-            }))
+                dates = grp['Date'].iloc[split:].reset_index(drop=True)
+
+                all_preds.append(pd.DataFrame({
+                    'Date': dates,
+                    'Ticker': ticker,
+                    'Model': name,
+                    'Actual_Return': actual,
+                    'Pred_Return': preds,
+                    'Signal': signal,
+                    'Strategy_Return': strategy_returns
+                }))
+
+            except Exception as e:
+                print(f"[ERROR] {ticker} - {name}: {e}")
 
     if len(all_preds) == 0:
-        raise ValueError("No predictions generated — check data filtering.")
+        raise ValueError("No predictions generated — check pipeline.")
 
     preds_df = pd.concat(all_preds, ignore_index=True)
     metrics_df = pd.DataFrame(metrics)
@@ -165,21 +199,24 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
     preds_df.to_csv('results/predictions/ml_predictions.csv', index=False)
     metrics_df.to_csv('results/metrics/ml_metrics.csv', index=False)
 
+    # =========================
+    # METADATA
+    # =========================
     metadata = {
         "seed": SEED,
         "test_ratio": test_ratio,
-        "start_date": str(start_date),
-        "end_date": str(end_date),
         "features": feature_cols,
-        "models": model_names,
-        "data_hash": file_hash(BASE_DIR / "data" /  "backtestingData.csv"),
+        "models": list(models.keys()),
+        "data_hash": file_hash(BASE_DIR / "data" / "backtestingData.csv"),
         "timestamp": datetime.now().isoformat()
     }
 
-    with open(BASE_DIR / "results" / "metadata"/ "ml.json", "w") as f:
+    with open(BASE_DIR / "results" / "metadata" / "ml.json", "w") as f:
         json.dump(metadata, f, indent=4)
 
-   
+    # =========================
+    # PLOTS
+    # =========================
     for model_name in preds_df['Model'].unique():
         subset = preds_df[preds_df['Model'] == model_name]
 
@@ -195,8 +232,13 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
 
     return metrics_df
 
+
+# =========================
+# RUN
+# =========================
 if __name__ == '__main__':
-    df = pd.read_csv(BASE_DIR / "data" /  "backtestingData.csv", parse_dates=['Date'])
+    df = pd.read_csv(BASE_DIR / "data" / "backtestingData.csv", parse_dates=['Date'])
+
     metrics = run_ml_backtest(df)
 
     print('\nML backtest metrics:')
