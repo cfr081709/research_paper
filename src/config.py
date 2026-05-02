@@ -17,12 +17,16 @@ METADATA_DIR = RESULTS_DIR / "metadata"
 for d in [METRICS_DIR, PREDICTIONS_DIR, METADATA_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# Reproducibility
-os.environ["PYTHONHASHSEED"] = str(SEED)
-os.environ["TF_DETERMINISTIC_OPS"] = "1"
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+def set_seed(seed: int = 42):
+    # Reproducibility
+    os.environ["PYTHONHASHSEED"] = str(seed)   # FIX: was str(SEED), ignoring the parameter
+    os.environ["TF_DETERMINISTIC_OPS"] = "1"
+    os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
-random.seed(SEED)
-np.random.seed(SEED)
-tf.random.set_seed(SEED)
+    random.seed(seed)    # FIX: was SEED (module-level constant), ignoring parameter
+    np.random.seed(seed) # FIX: same
+    tf.random.set_seed(seed)  # FIX: same
+
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+    tf.config.threading.set_intra_op_parallelism_threads(1)

@@ -82,16 +82,19 @@ class SignalBacktester:
     # =========================
     def run(self, lookahead=1):
 
-        df = self.data.copy()
+        # FIX: Return was added to a local copy, but _build_signals() operates on self.data
+        # (which had no Return column), so Signal * Return produced all-NaN Strategy_Return.
+        # Solution: add Return directly to self.data BEFORE calling _build_signals(), then
+        # work from the single DataFrame that _build_signals() returns.
 
-        # 🔥 Forward returns (correct, no lookahead bias)
-        df['Return'] = (
-            df.groupby('Ticker')['Close']
+        # Forward returns (correct, no lookahead bias)
+        self.data['Return'] = (
+            self.data.groupby('Ticker')['Close']
             .pct_change(periods=lookahead)
             .shift(-lookahead)
         )
 
-        # Build signals
+        # Build signals — operates on and returns self.data (now with Return column)
         df = self._build_signals()
 
         # Strategy returns

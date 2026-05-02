@@ -40,6 +40,21 @@ Model performance is assessed using both predictive and financial metrics:
 
 This dual evaluation framework ensures models are judged not only on statistical accuracy, but also on real-world trading utility.
 
+### LSTM Output
+
+The LSTM experiment is implemented in `src/LSTM.py` and writes paper-ready outputs using the same schema as the other ML models:
+
+- `results/metrics/lstm_metrics.csv`
+- `results/predictions/lstm_predictions.csv`
+- `results/graphs/LSTM_pred_vs_actual.png`
+- `results/metadata/LSTM.json`
+
+Run it with:
+
+```bash
+python src/LSTM.py
+```
+
 ---
 
 ## Key Objective

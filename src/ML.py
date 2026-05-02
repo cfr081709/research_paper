@@ -64,7 +64,7 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
     Path("results/predictions").mkdir(parents=True, exist_ok=True)
     Path("results/metrics").mkdir(parents=True, exist_ok=True)
     Path("results/metadata").mkdir(parents=True, exist_ok=True)
-    Path("Final Backtest Data").mkdir(parents=True, exist_ok=True)
+    Path("results/graphs").mkdir(parents=True, exist_ok=True)   # FIX: was missing; needed for plt.savefig
 
     # --- date filtering ---
     if start_date:
@@ -227,7 +227,7 @@ def run_ml_backtest(df, test_ratio=0.2, start_date=None, end_date=None):
         plt.title(f'{model_name} Predicted vs Actual Returns')
         plt.grid(True)
 
-        plt.savefig(f'Final Backtest Data/{model_name}_pred_vs_actual.png')
+        plt.savefig(f'results/graphs/{model_name}_pred_vs_actual.png')
         plt.close()
 
     return metrics_df

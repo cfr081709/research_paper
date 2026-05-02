@@ -78,8 +78,13 @@ class DataEngineer:
         low = df['Low']
         close = df['Close']
 
-        plus_dm = (high.diff()).clip(lower=0)
-        minus_dm = (-low.diff()).clip(lower=0)
+        # Wilder's DM: each bar only contributes to plus OR minus, not both
+        raw_plus  = high.diff()
+        raw_minus = -low.diff()
+        plus_dm  = np.where((raw_plus > raw_minus) & (raw_plus > 0), raw_plus,  0.0)
+        minus_dm = np.where((raw_minus > raw_plus) & (raw_minus > 0), raw_minus, 0.0)
+        plus_dm  = pd.Series(plus_dm,  index=high.index)
+        minus_dm = pd.Series(minus_dm, index=high.index)
 
         tr = pd.concat([
             high - low,
