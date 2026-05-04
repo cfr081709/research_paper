@@ -40,7 +40,7 @@ class DataEngineer:
     def process_ticker(self, df, ticker):
         df = df.copy()
 
-        # Reset index → FIXES your Date issue
+        # Reset index
         df = df.reset_index()
         df.rename(columns={"Date": "Date"}, inplace=True)
 
